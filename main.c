@@ -13,10 +13,16 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#if 0
 #define fatal(msg)                                                                                                                                             \
 	fprintf(stderr, "%s:%d: error in function %s: ", __FILE__, __LINE__, __func__);                                                                            \
 	perror(msg);                                                                                                                                               \
 	exit(1);
+#else
+#define fatal(msg)                                                                                                                                             \
+	perror(msg);                                                                                                                                               \
+	exit(1);
+#endif
 
 pid_t child_pid;
 
@@ -34,13 +40,60 @@ void extract_str(char *buf, size_t bufsz, unsigned long long address) {
 	}
 }
 
+void usage(const char *program_name) {
+	fprintf(stderr, "Usage: %s [options] - <command> [args...]\n", program_name);
+	fprintf(stderr, "Options:\n");
+	fprintf(stderr, "\t-o <file>  Redirect the output to <file>\n");
+}
+
+char *next_arg(int *argc, char ***argv) {
+	assert(*argc > 0);
+	char *result = **argv;
+	*argc -= 1;
+	*argv += 1;
+	return result;
+}
+
+#define NEXT_ARG() next_arg(&argc, &argv)
+#define streq(a, b) strcmp((a), (b)) == 0
+
 int main(int argc, char *argv[]) {
-	if (argc < 2) {
-		fprintf(stderr, "Usage: %s <command> [args...]\n", argv[0]);
-		return 1;
-	}
+	const char *program_name = NEXT_ARG();
 
 	FILE *sink = stderr;
+
+	while (argc) {
+		const char *arg = NEXT_ARG();
+		if (streq(arg, "-")) {
+			if (argc)
+				goto start;
+
+			fprintf(stderr, "%s: fatal error: missing command after '-'\n", program_name);
+			usage(program_name);
+			return 1;
+		} else if (streq(arg, "-o")) {
+			if (!argc) {
+				fprintf(stderr, "%s: fatal error: missing filename after '-o'\n", program_name);
+				usage(program_name);
+				return 1;
+			}
+
+			const char *filename = NEXT_ARG();
+
+			sink = fopen(filename, "w");
+			if (sink) {
+				fprintf(stderr, "successfully opened the log file '%s'\n", filename);
+			} else {
+				fatal("failed to open the output file");
+			}
+		}
+	}
+
+	fprintf(stderr, "%s: missing '-'\n", program_name);
+	usage(program_name);
+	return 1;
+
+start:
 
 	child_pid = fork();
 	if (child_pid == -1) {
@@ -49,7 +102,7 @@ int main(int argc, char *argv[]) {
 		if (ptrace(PTRACE_TRACEME, 0, NULL, NULL) == -1) {
 			fatal("failed to trace the child");
 		}
-		execvp(argv[1], argv + 1);
+		execvp(argv[0], argv);
 		fatal("failed to execute the child");
 	} else {
 		int status;
@@ -433,6 +486,11 @@ int main(int argc, char *argv[]) {
 
 			ptrace(PTRACE_SYSCALL, child_pid, NULL, NULL);
 		}
+	}
+
+	if (sink != stderr) {
+		if (fclose(sink))
+			fatal("failed to close the output file");
 	}
 
 	return 0;
